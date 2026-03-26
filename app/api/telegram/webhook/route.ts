@@ -157,13 +157,15 @@ async function callOpenClaw(
 // ──────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
-  // Always return 200 quickly so Telegram doesn't retry
   const update = await req.json();
 
-  // We process asynchronously and return 200 immediately
-  processUpdate(update).catch((err) => {
+  // PENTING: harus await — di Vercel serverless, background task
+  // langsung dimatikan setelah response dikembalikan.
+  try {
+    await processUpdate(update);
+  } catch (err) {
     console.error("Unhandled error in processUpdate:", err);
-  });
+  }
 
   return NextResponse.json({ ok: true });
 }
