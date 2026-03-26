@@ -24,8 +24,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // VERCEL_URL dari Vercel tidak include protokol, tambahkan https:// manual
-  const rawUrl = process.env.VERCEL_URL ?? "";
+  // Gunakan PRODUCTION_URL (custom) bukan VERCEL_URL (di-override Vercel otomatis)
+  const rawUrl = process.env.PRODUCTION_URL ?? process.env.VERCEL_URL ?? "";
   const baseUrl = rawUrl.startsWith("http") ? rawUrl : `https://${rawUrl}`;
   const webhookUrl = `${baseUrl}/api/telegram/webhook`;
   const telegramApi = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
