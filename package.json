@@ -1,5 +1,4 @@
 {
-  "__comment_path": "📁 PATH: package.json  (root project — sejajar dengan next.config.js)",
   "name": "openclaw-telegram-bridge",
   "version": "1.0.0",
   "private": true,
