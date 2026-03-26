@@ -1,5 +1,4 @@
 {
-  "__comment_path": "📁 PATH: vercel.json  (root project — sejajar dengan package.json)",
   "functions": {
     "app/api/telegram/webhook/route.ts": {
       "maxDuration": 60
