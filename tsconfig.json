@@ -1,5 +1,4 @@
 {
-  "__comment_path": "📁 PATH: tsconfig.json  (root project — sejajar dengan package.json)",
   "compilerOptions": {
     "target": "ES2017",
     "lib": ["dom", "dom.iterable", "esnext"],
