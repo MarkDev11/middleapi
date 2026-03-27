@@ -131,75 +131,70 @@ async function sendError(chatId: number, msg: string) {
 // OpenClaw helpers
 // ──────────────────────────────────────────────
 
-// PRODUCTION_URL untuk callback — harus include https://
-const VERCEL_PRODUCTION_URL = process.env.PRODUCTION_URL ?? `https://${process.env.VERCEL_URL}`;
-const CALLBACK_SECRET = process.env.CALLBACK_SECRET!;
+// ──────────────────────────────────────────────────────────────
+// OpenClaw: fire-and-forget via agent runs API
+// Vercel kirim task → langsung return
+// OpenClaw selesai → POST balik ke /api/openclaw/callback
+// ──────────────────────────────────────────────────────────────
 
-// Fire-and-forget: kirim task ke OpenClaw tanpa nunggu jawaban.
-// OpenClaw akan POST balik ke /api/openclaw/callback kalau sudah selesai.
-async function sendToOpenClaw(
+const CALLBACK_SECRET = process.env.CALLBACK_SECRET!;
+const PRODUCTION_URL = process.env.PRODUCTION_URL!;
+
+async function fireOpenClaw(
   userMessage: string,
   userId: number,
   chatId: number,
   placeholderMsgId: number,
-  replyToMessageId: number,
+  replyToMsgId: number,
   username?: string
 ): Promise<void> {
-  const callbackUrl = `${VERCEL_PRODUCTION_URL}/api/openclaw/callback`;
+  const callbackUrl = `${PRODUCTION_URL}/api/openclaw/callback`;
 
-  const systemPrompt = [
-    "You are a helpful AI assistant accessible via Telegram.",
-    username ? `The user\'s Telegram username is @${username}.` : "",
-    "Respond naturally and concisely. Use Markdown formatting when appropriate.",
-    "For code, always use code blocks with the language name.",
+  // Instruksi callback disisipkan ke pesan user — lebih reliable
+  // karena OpenClaw agent membaca seluruh kontek termasuk user message
+  const fullMessage = [
+    userMessage,
     "",
-    "IMPORTANT: When you have finished your response, you MUST send it back via HTTP POST.",
-    `Send a POST request to: ${callbackUrl}`,
-    `With header: x-callback-secret: ${CALLBACK_SECRET}`,
-    "With JSON body:",
+    "---",
+    "SYSTEM INSTRUCTION (follow exactly):",
+    "After completing your task, use your HTTP fetch tool to POST the result:",
+    `URL: ${callbackUrl}`,
+    `Method: POST`,
+    `Headers: { "Content-Type": "application/json", "x-callback-secret": "${CALLBACK_SECRET}" }`,
+    `Body (JSON):`,
     `{`,
     `  "chat_id": ${chatId},`,
     `  "placeholder_message_id": ${placeholderMsgId},`,
-    `  "reply_to_message_id": ${replyToMessageId},`,
-    `  "text": "YOUR FULL RESPONSE HERE"`,
+    `  "reply_to_message_id": ${replyToMsgId},`,
+    `  "text": "<your full response here>"`,
     `}`,
-    "If you produced a screenshot or image file, also include:",
-    `  "photo_url": "https://your-image-url.png"`,
-    "Send this callback as the LAST action after completing your task.",
-  ].filter(Boolean).join("\n");
+    "This POST is mandatory. Do it as the final step.",
+  ].join("
+");
 
-  const response = await fetch(`${OPENCLAW_BASE_URL}/v1/chat/completions`, {
+  // Kirim ke agent runs — OpenClaw eksekusi sebagai agent (bisa pakai tools)
+  const res = await fetch(`${OPENCLAW_BASE_URL}/api/agents/${OPENCLAW_AGENT_ID}/runs`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${OPENCLAW_TOKEN}`,
-      "x-openclaw-agent-id": OPENCLAW_AGENT_ID,
     },
     body: JSON.stringify({
-      model: "openclaw",
-      user: `tg_${userId}`,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userMessage },
-      ],
-      stream: false,
-      max_tokens: 4000,
+      input: fullMessage,
+      userId: `tg_${userId}`,
     }),
-    // Timeout 10 menit — OpenClaw hanya perlu acknowledge task diterima
-    signal: AbortSignal.timeout(10 * 60 * 1000),
+    // Cukup tunggu sampai OpenClaw acknowledge task diterima (~5 detik)
+    signal: AbortSignal.timeout(30_000),
   });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error("OpenClaw error:", response.status, errorText);
-    if (response.status === 503) {
-      throw new Error("OpenClaw sedang warm up. Coba lagi dalam beberapa detik.");
-    }
-    if (response.status === 401) {
-      throw new Error("OpenClaw auth gagal. Cek OPENCLAW_GATEWAY_PASSWORD.");
-    }
-    throw new Error(`OpenClaw returned ${response.status}`);
+  if (!res.ok) {
+    const err = await res.text();
+    console.error("OpenClaw agent run error:", res.status, err);
+    throw new Error(`OpenClaw returned ${res.status}`);
   }
+
+  const data = await res.json();
+  console.log("OpenClaw run started:", data?.id ?? data?.run_id ?? JSON.stringify(data));
 }
 
 
@@ -316,7 +311,7 @@ async function processUpdate(update: TelegramUpdate) {
   }
 
   try {
-    // 1. Kirim placeholder — user tahu bot sedang kerja
+    // 1. Kirim placeholder — user langsung lihat bot aktif
     const placeholderRes = await fetch(`${TELEGRAM_API}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -330,19 +325,17 @@ async function processUpdate(update: TelegramUpdate) {
     const placeholderData = await placeholderRes.json();
     const placeholderMsgId: number = placeholderData?.result?.message_id;
 
-    // 2. Fire-and-forget ke OpenClaw — tidak perlu nunggu selesai.
-    //    OpenClaw akan POST balik ke /api/openclaw/callback kalau selesai.
-    sendToOpenClaw(text, userId, chatId, placeholderMsgId, messageId, username)
-      .catch(async (err) => {
-        const msg = err instanceof Error ? err.message : "Terjadi kesalahan.";
-        if (placeholderMsgId) {
-          await editMessage(chatId, placeholderMsgId, `⚠️ ${msg}`);
-        } else {
-          await sendError(chatId, msg);
-        }
-      });
+    // 2. Fire task ke OpenClaw — Vercel langsung selesai di sini
+    //    OpenClaw akan POST ke /api/openclaw/callback kalau sudah selesai
+    try {
+      await fireOpenClaw(text, userId, chatId, placeholderMsgId, messageId, username);
+      console.log("Task fired to OpenClaw, waiting for callback...");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Gagal mengirim task ke OpenClaw.";
+      await editMessage(chatId, placeholderMsgId, `⚠️ ${msg}`);
+    }
 
-    // 3. Langsung selesai — Vercel return, OpenClaw kerja di background HF Spaces
+    // Vercel selesai di sini — tidak nunggu OpenClaw
   } catch (err: unknown) {
     const msg =
       err instanceof Error ? err.message : "Terjadi kesalahan yang tidak diketahui.";
