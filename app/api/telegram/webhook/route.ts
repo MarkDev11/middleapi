@@ -93,6 +93,29 @@ async function sendMessage(chatId: number, text: string, replyToMessageId?: numb
   }
 }
 
+
+async function editMessage(chatId: number, messageId: number, text: string) {
+  const MAX_LENGTH = 4096;
+  const truncated = text.length > MAX_LENGTH ? text.slice(0, MAX_LENGTH - 20) + "...(truncated)" : text;
+  await fetch(`${TELEGRAM_API}/editMessageText`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: chatId,
+      message_id: messageId,
+      text: truncated,
+      parse_mode: "Markdown",
+    }),
+  }).catch(() =>
+    // Fallback tanpa markdown kalau parse error
+    fetch(`${TELEGRAM_API}/editMessageText`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, message_id: messageId, text: truncated }),
+    })
+  );
+}
+
 async function sendError(chatId: number, msg: string) {
   await fetch(`${TELEGRAM_API}/sendMessage`, {
     method: "POST",
@@ -108,19 +131,42 @@ async function sendError(chatId: number, msg: string) {
 // OpenClaw helpers
 // ──────────────────────────────────────────────
 
-async function callOpenClaw(
+// PRODUCTION_URL untuk callback — harus include https://
+const VERCEL_PRODUCTION_URL = process.env.PRODUCTION_URL ?? `https://${process.env.VERCEL_URL}`;
+const CALLBACK_SECRET = process.env.CALLBACK_SECRET!;
+
+// Fire-and-forget: kirim task ke OpenClaw tanpa nunggu jawaban.
+// OpenClaw akan POST balik ke /api/openclaw/callback kalau sudah selesai.
+async function sendToOpenClaw(
   userMessage: string,
   userId: number,
+  chatId: number,
+  placeholderMsgId: number,
+  replyToMessageId: number,
   username?: string
-): Promise<string> {
+): Promise<void> {
+  const callbackUrl = `${VERCEL_PRODUCTION_URL}/api/openclaw/callback`;
+
   const systemPrompt = [
     "You are a helpful AI assistant accessible via Telegram.",
-    username ? `The user's Telegram username is @${username}.` : "",
+    username ? `The user\'s Telegram username is @${username}.` : "",
     "Respond naturally and concisely. Use Markdown formatting when appropriate.",
     "For code, always use code blocks with the language name.",
-  ]
-    .filter(Boolean)
-    .join(" ");
+    "",
+    "IMPORTANT: When you have finished your response, you MUST send it back via HTTP POST.",
+    `Send a POST request to: ${callbackUrl}`,
+    `With header: x-callback-secret: ${CALLBACK_SECRET}`,
+    "With JSON body:",
+    `{`,
+    `  "chat_id": ${chatId},`,
+    `  "placeholder_message_id": ${placeholderMsgId},`,
+    `  "reply_to_message_id": ${replyToMessageId},`,
+    `  "text": "YOUR FULL RESPONSE HERE"`,
+    `}`,
+    "If you produced a screenshot or image file, also include:",
+    `  "photo_url": "https://your-image-url.png"`,
+    "Send this callback as the LAST action after completing your task.",
+  ].filter(Boolean).join("\n");
 
   const response = await fetch(`${OPENCLAW_BASE_URL}/v1/chat/completions`, {
     method: "POST",
@@ -131,7 +177,6 @@ async function callOpenClaw(
     },
     body: JSON.stringify({
       model: "openclaw",
-      // Pass userId so OpenClaw maintains a stable session per Telegram user
       user: `tg_${userId}`,
       messages: [
         { role: "system", content: systemPrompt },
@@ -140,33 +185,75 @@ async function callOpenClaw(
       stream: false,
       max_tokens: 4000,
     }),
-    // Vercel has max 60s on Pro, 10s on Hobby
-    // HF Spaces can be slow, so we rely on Vercel's native timeout
+    // Timeout 10 menit — OpenClaw hanya perlu acknowledge task diterima
+    signal: AbortSignal.timeout(10 * 60 * 1000),
   });
 
   if (!response.ok) {
     const errorText = await response.text();
     console.error("OpenClaw error:", response.status, errorText);
-
     if (response.status === 503) {
-      throw new Error(
-        "OpenClaw is waking up (HF Space cold start). Please try again in a moment."
-      );
+      throw new Error("OpenClaw sedang warm up. Coba lagi dalam beberapa detik.");
     }
     if (response.status === 401) {
-      throw new Error("OpenClaw auth failed. Check OPENCLAW_GATEWAY_PASSWORD.");
+      throw new Error("OpenClaw auth gagal. Cek OPENCLAW_GATEWAY_PASSWORD.");
     }
     throw new Error(`OpenClaw returned ${response.status}`);
   }
+}
 
-  const data = await response.json();
-  const content = data?.choices?.[0]?.message?.content;
 
-  if (!content) {
-    throw new Error("Empty response from OpenClaw.");
+// ──────────────────────────────────────────────
+// Screenshot helper
+// ──────────────────────────────────────────────
+
+// Deteksi nama file gambar dari teks response OpenClaw
+function extractImageFilenames(text: string): string[] {
+  const matches = text.match(/([\w\-\.]+\.(?:png|jpg|jpeg|gif|webp))/gi);
+  return matches ? [...new Set(matches)] : [];
+}
+
+// Ambil file dari workspace OpenClaw di HF Spaces lalu kirim ke Telegram
+async function trySendScreenshots(chatId: number, text: string, replyToMessageId: number) {
+  const filenames = extractImageFilenames(text);
+  if (filenames.length === 0) return;
+
+  for (const filename of filenames) {
+    try {
+      // OpenClaw workspace default ada di /root/.openclaw/workspace/
+      // HF Spaces expose file melalui endpoint gateway files
+      const fileUrl = `${OPENCLAW_BASE_URL}/api/agents/${OPENCLAW_AGENT_ID}/workspace/files/${filename}`;
+      const fileRes = await fetch(fileUrl, {
+        headers: { Authorization: `Bearer ${OPENCLAW_TOKEN}` },
+        signal: AbortSignal.timeout(15_000),
+      });
+
+      if (!fileRes.ok) {
+        console.log(`Could not fetch ${filename}: ${fileRes.status}`);
+        continue;
+      }
+
+      const blob = await fileRes.blob();
+      const formData = new FormData();
+      formData.append("chat_id", chatId.toString());
+      formData.append("photo", blob, filename);
+      formData.append("reply_to_message_id", replyToMessageId.toString());
+      formData.append("caption", `📸 ${filename}`);
+
+      const sendRes = await fetch(`${TELEGRAM_API}/sendPhoto`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (sendRes.ok) {
+        console.log(`Screenshot ${filename} sent to Telegram.`);
+      } else {
+        console.log(`Failed to send photo ${filename}: ${await sendRes.text()}`);
+      }
+    } catch (err) {
+      console.log(`Error sending screenshot ${filename}:`, err);
+    }
   }
-
-  return content;
 }
 
 // ──────────────────────────────────────────────
@@ -229,20 +316,33 @@ async function processUpdate(update: TelegramUpdate) {
   }
 
   try {
-    // Send typing indicator immediately
-    await sendTyping(chatId);
+    // 1. Kirim placeholder — user tahu bot sedang kerja
+    const placeholderRes = await fetch(`${TELEGRAM_API}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: "⏳ _Sedang memproses..._",
+        parse_mode: "Markdown",
+        reply_to_message_id: messageId,
+      }),
+    });
+    const placeholderData = await placeholderRes.json();
+    const placeholderMsgId: number = placeholderData?.result?.message_id;
 
-    // Keep typing alive during long responses (every 4s)
-    const typingInterval = setInterval(() => sendTyping(chatId), 4000);
+    // 2. Fire-and-forget ke OpenClaw — tidak perlu nunggu selesai.
+    //    OpenClaw akan POST balik ke /api/openclaw/callback kalau selesai.
+    sendToOpenClaw(text, userId, chatId, placeholderMsgId, messageId, username)
+      .catch(async (err) => {
+        const msg = err instanceof Error ? err.message : "Terjadi kesalahan.";
+        if (placeholderMsgId) {
+          await editMessage(chatId, placeholderMsgId, `⚠️ ${msg}`);
+        } else {
+          await sendError(chatId, msg);
+        }
+      });
 
-    try {
-      const reply = await callOpenClaw(text, userId, username);
-      clearInterval(typingInterval);
-      await sendMessage(chatId, reply, messageId);
-    } catch (err) {
-      clearInterval(typingInterval);
-      throw err;
-    }
+    // 3. Langsung selesai — Vercel return, OpenClaw kerja di background HF Spaces
   } catch (err: unknown) {
     const msg =
       err instanceof Error ? err.message : "Terjadi kesalahan yang tidak diketahui.";
