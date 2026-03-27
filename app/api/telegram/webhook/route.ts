@@ -11,6 +11,23 @@
 // ─────────────────────────────────────────────────────────────
 
 import { NextRequest, NextResponse } from "next/server";
+import { waitUntil } from "@vercel/functions";
+
+// Cache update_id yang sudah diproses — cegah duplikat kalau Telegram retry
+// Map<update_id, timestamp> — dibersihkan setiap 5 menit
+const processedUpdates = new Map<number, number>();
+const DEDUP_TTL_MS = 5 * 60 * 1000; // 5 menit
+
+function isDuplicate(updateId: number): boolean {
+  const now = Date.now();
+  // Bersihkan entri lama
+  for (const [id, ts] of processedUpdates.entries()) {
+    if (now - ts > DEDUP_TTL_MS) processedUpdates.delete(id);
+  }
+  if (processedUpdates.has(updateId)) return true;
+  processedUpdates.set(updateId, now);
+  return false;
+}
 
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 const OPENCLAW_BASE_URL = process.env.OPENCLAW_HF_URL!; // e.g. https://mark421-openclaw-ai.hf.space
@@ -159,13 +176,20 @@ async function callOpenClaw(
 export async function POST(req: NextRequest) {
   const update = await req.json();
 
-  // PENTING: harus await — di Vercel serverless, background task
-  // langsung dimatikan setelah response dikembalikan.
-  try {
-    await processUpdate(update);
-  } catch (err) {
-    console.error("Unhandled error in processUpdate:", err);
+  // Langsung return 200 ke Telegram (< 5 detik) agar tidak retry/loop.
+  // waitUntil memastikan processUpdate tetap jalan di background
+  // meski response sudah dikirim — solusi resmi Vercel untuk webhook.
+  // Cegah duplikat — Telegram retry kalau webhook lambat
+  if (isDuplicate(update.update_id)) {
+    console.log(`Duplicate update_id ${update.update_id}, skipping.`);
+    return NextResponse.json({ ok: true });
   }
+
+  waitUntil(
+    processUpdate(update).catch((err) => {
+      console.error("Unhandled error in processUpdate:", err);
+    })
+  );
 
   return NextResponse.json({ ok: true });
 }
