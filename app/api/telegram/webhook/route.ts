@@ -325,17 +325,14 @@ async function processUpdate(update: TelegramUpdate) {
     const placeholderData = await placeholderRes.json();
     const placeholderMsgId: number = placeholderData?.result?.message_id;
 
-    // 2. Fire task ke OpenClaw — Vercel langsung selesai di sini
-    //    OpenClaw akan POST ke /api/openclaw/callback kalau sudah selesai
+    // 2. Fire ke OpenClaw — Vercel langsung selesai di sini
+    //    OpenClaw agent jalan di background, POST balik ke /api/openclaw/callback kalau selesai
     try {
       await fireOpenClaw(text, userId, chatId, placeholderMsgId, messageId, username);
-      console.log("Task fired to OpenClaw, waiting for callback...");
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Gagal mengirim task ke OpenClaw.";
+      const msg = err instanceof Error ? err.message : "Gagal mengirim ke OpenClaw.";
       await editMessage(chatId, placeholderMsgId, `⚠️ ${msg}`);
     }
-
-    // Vercel selesai di sini — tidak nunggu OpenClaw
   } catch (err: unknown) {
     const msg =
       err instanceof Error ? err.message : "Terjadi kesalahan yang tidak diketahui.";
