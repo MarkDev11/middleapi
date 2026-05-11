@@ -21,7 +21,7 @@ jobs:
           # Menggunakan cURL untuk mengirim GET request.
           # Opsi -s untuk silent mode, -o /dev/null untuk mengabaikan output body, 
           # dan -w untuk mencetak kode status HTTP.
-          STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X GET "https://markdevilyt-vs.hf.space")
+          STATUS_CODE=$(curl -s -L -o /dev/null -w "%{http_code}" -X GET "https://markdevilyt-vs.hf.space")
           
           echo "Ping selesai pada $(date)"
           echo "Kode Status HTTP yang diterima: $STATUS_CODE"
