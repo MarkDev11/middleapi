@@ -1,27 +1,33 @@
-name: Ping HF Space 24 Jam
+name: Ping Multiple HF Spaces 24 Jam
 
 on:
   schedule:
-    # Format Cron (Menit Jam Tanggal Bulan Hari)
-    # '0 0 * * *' berarti berjalan pada jam 00:00 UTC setiap harinya (sekitar jam 07:00 WIB / 08:00 WITA)
     - cron: '0 0 * * *'
-  
-  # Trigger workflow_dispatch ditambahkan agar Anda bisa menjalankan script ini secara manual
-  # melalui tab 'Actions' di GitHub tanpa harus menunggu jadwal cron.
   workflow_dispatch: 
 
 jobs:
   ping-job:
     runs-on: ubuntu-latest
     steps:
-      - name: Eksekusi HTTP GET Request
+      - name: Eksekusi HTTP GET Request ke Banyak URL
         run: |
-          echo "Memulai ping ke https://markdevilyt-vs.hf.space..."
+          # Masukkan daftar URL di bawah ini, letakkan di dalam tanda kutip dan pisahkan dengan baris baru atau spasi
+          URLS=(
+            "https://markdevilyt-vs.hf.space"
+            "https://elysiadev11-proxy.hf.space"
+          )
+
+          # Loop untuk mengeksekusi ping ke setiap URL
+          for URL in "${URLS[@]}"; do
+            echo "--------------------------------------------------"
+            echo "Memulai ping ke $URL..."
+            
+            # Menggunakan -L agar mengikuti redirect (302) hingga mendapat respons akhir
+            STATUS_CODE=$(curl -s -L -o /dev/null -w "%{http_code}" -X GET "$URL")
+            
+            echo "Waktu: $(date)"
+            echo "Kode Status HTTP: $STATUS_CODE"
+          done
           
-          # Menggunakan cURL untuk mengirim GET request.
-          # Opsi -s untuk silent mode, -o /dev/null untuk mengabaikan output body, 
-          # dan -w untuk mencetak kode status HTTP.
-          STATUS_CODE=$(curl -s -L -o /dev/null -w "%{http_code}" -X GET "https://markdevilyt-vs.hf.space")
-          
-          echo "Ping selesai pada $(date)"
-          echo "Kode Status HTTP yang diterima: $STATUS_CODE"
+          echo "--------------------------------------------------"
+          echo "Semua tugas ping selesai."
