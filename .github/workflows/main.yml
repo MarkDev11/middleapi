@@ -1,0 +1,27 @@
+name: Ping HF Space 24 Jam
+
+on:
+  schedule:
+    # Format Cron (Menit Jam Tanggal Bulan Hari)
+    # '0 0 * * *' berarti berjalan pada jam 00:00 UTC setiap harinya (sekitar jam 07:00 WIB / 08:00 WITA)
+    - cron: '0 0 * * *'
+  
+  # Trigger workflow_dispatch ditambahkan agar Anda bisa menjalankan script ini secara manual
+  # melalui tab 'Actions' di GitHub tanpa harus menunggu jadwal cron.
+  workflow_dispatch: 
+
+jobs:
+  ping-job:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Eksekusi HTTP GET Request
+        run: |
+          echo "Memulai ping ke https://markdevilyt-vs.hf.space..."
+          
+          # Menggunakan cURL untuk mengirim GET request.
+          # Opsi -s untuk silent mode, -o /dev/null untuk mengabaikan output body, 
+          # dan -w untuk mencetak kode status HTTP.
+          STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X GET "https://markdevilyt-vs.hf.space")
+          
+          echo "Ping selesai pada $(date)"
+          echo "Kode Status HTTP yang diterima: $STATUS_CODE"
