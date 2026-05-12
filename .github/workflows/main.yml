@@ -15,6 +15,7 @@ jobs:
           URLS=(
             "https://markdevilyt-vs.hf.space"
             "https://elysiadev11-proxy.hf.space"
+            "https://elysiadev11-proxycf.hf.space"
           )
 
           # Loop untuk mengeksekusi ping ke setiap URL
