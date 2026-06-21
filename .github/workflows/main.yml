@@ -16,6 +16,9 @@ jobs:
             "https://markdevilyt-vs.hf.space"
             "https://elysiadev11-proxy.hf.space"
             "https://elysiadev11-proxycf.hf.space"
+            "https://elysia7322-proxy.hf.space"
+            "https://elysiadev11-router.hf.space"
+            
           )
 
           # Loop untuk mengeksekusi ping ke setiap URL
